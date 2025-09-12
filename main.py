@@ -133,6 +133,10 @@ class ShellEmulator(tk.Tk):
             self._command_cd(args)
         elif command == "pwd":
             self._command_pwd()
+        elif command == "uniq":
+            self._command_uniq(args)
+        elif command == "head":
+            self._command_head(args)
         elif command == "vfs-save":
             self._command_vfs_save(args)
         elif command == "exit":
@@ -197,6 +201,64 @@ class ShellEmulator(tk.Tk):
         except Exception as e:
             self._display_output(f"Error saving VFS: {e}")
 
+    def _command_uniq(self, args):
+        if not args:
+            self._display_output("uniq: missing file operand")
+            return
+
+        filename = args[0]
+        node = self._get_file_from_cwd(filename)
+        if not node:
+            self._display_output(f"uniq: {filename}: No such file")
+            return
+
+        if node.is_dir:
+            self._display_output(f"uniq: {filename}: Is a directory")
+            return
+
+        lines = node.content.splitlines()
+        prev = None
+        result = []
+        for line in lines:
+            if line != prev:
+                result.append(line)
+            prev = line
+
+        self._display_output("\n".join(result))
+
+    def _command_head(self, args):
+        if not args:
+            self._display_output("head: missing file operand")
+            return
+
+        filename = args[0]
+        n = 10  # по умолчанию 10 строк
+        if args[0].startswith("-n"):
+            try:
+                n = int(args[0][2:])
+                filename = args[1]
+            except:
+                self._display_output("head: invalid number of lines")
+                return
+        else:
+            filename = args[0]
+
+        node = self._get_file_from_cwd(filename)
+        if not node:
+            self._display_output(f"head: {filename}: No such file")
+            return
+
+        if node.is_dir:
+            self._display_output(f"head: {filename}: Is a directory")
+            return
+
+        lines = node.content.splitlines()
+        self._display_output("\n".join(lines[:n]))
+
+    def _get_file_from_cwd(self, name):
+        if name in self.cwd.children:
+            return self.cwd.children[name]
+        return None
     # ---------------- VFS Implementation ----------------
 
     def _load_vfs(self, root_path):
