@@ -1,20 +1,22 @@
 import tkinter as tk
 from tkinter import scrolledtext
-import os
+import shlex
 import platform
 import getpass
 import argparse
-import shutil
 
 
+# ----------------- VFS Node -----------------
 class VFSNode:
-    def __init__(self, name, is_dir):
+    def __init__(self, name, is_dir, parent=None):
         self.name = name
         self.is_dir = is_dir
+        self.parent = parent   # ссылка на родителя
         self.children = {} if is_dir else None
         self.content = "" if not is_dir else None
 
 
+# ----------------- Shell Emulator -----------------
 class ShellEmulator(tk.Tk):
     def __init__(self, vfs_path=None, startup_script=None):
         super().__init__()
@@ -24,316 +26,223 @@ class ShellEmulator(tk.Tk):
         self.history = []
         self.history_index = -1
 
-        # VFS
-        self.vfs_root = None
-        self.cwd = None
+        # создаём VFS
+        self.vfs_root = VFSNode("/", True, None)
+        self.cwd = self.vfs_root
+
+        # для примера сразу сделаем /home/user
+        home = VFSNode("home", True, self.vfs_root)
+        self.vfs_root.children["home"] = home
+        user = VFSNode("user", True, home)
+        home.children["user"] = user
+        file1 = VFSNode("text.txt", False, user)
+        file1.content = "Hellow World\n"
+        user.children["text.txt"] = file1
 
         self._setup_ui()
         self._display_welcome()
 
-        if vfs_path:
-            self._load_vfs(vfs_path)
-
-        if startup_script:
+        # запуск скрипта если указан
+        if self.startup_script:
             self.after(100, self._run_startup_script)
-        else:
-            self._display_prompt()
 
-    # ---------------- UI ----------------
-
-    def _setup_ui(self):
-        self.title(self._get_window_title())
-        self.geometry("800x600")
-
-        # Output
-        self.output_area = scrolledtext.ScrolledText(
-            self, state='disabled', wrap='word',
-            bg='black', fg='white', font=('Consolas', 12)
-        )
-        self.output_area.pack(expand=True, fill='both', padx=5, pady=5)
-
-        # Input
-        input_frame = tk.Frame(self, bg='black')
-        input_frame.pack(fill='x', padx=5, pady=5)
-
-        tk.Label(input_frame, text=">", fg='white', bg='black', font=('Consolas', 12)).pack(side='left')
-
-        self.input_entry = tk.Entry(
-            input_frame, bg='black', fg='white',
-            insertbackground='white', font=('Consolas', 12)
-        )
-        self.input_entry.pack(side='left', expand=True, fill='x', padx=(0, 5))
-        self.input_entry.focus_set()
-        self.input_entry.bind("<Return>", self._on_enter)
-        self.input_entry.bind("<Up>", self._history_up)
-        self.input_entry.bind("<Down>", self._history_down)
-
-    def _get_window_title(self):
-        username = getpass.getuser()
-        hostname = platform.node()
-        return f"Эмулятор - [{username}@{hostname}]"
-
-    def _display_welcome(self):
-        self._display_output("Welcome to the Shell Emulator!")
-        self._display_output(f"VFS path: {self.vfs_path}")
-        self._display_output(f"Startup script: {self.startup_script}")
-
-    def _display_output(self, text):
-        self.output_area.config(state='normal')
-        self.output_area.insert(tk.END, text + "\n")
-        self.output_area.config(state='disabled')
-        self.output_area.see(tk.END)
-
-    def _display_prompt(self):
-        self.input_entry.delete(0, tk.END)
-        self.output_area.config(state='normal')
-        self.output_area.insert(tk.END, "> ")
-        self.output_area.config(state='disabled')
-        self.output_area.see(tk.END)
-
-    # ---------------- Command handling ----------------
-
-    def _on_enter(self, event=None):
-        command = self.input_entry.get().strip()
-        if not command:
-            return
-
-        self.history.append(command)
-        self.history_index = len(self.history)
-
-        self._display_output(f"> {command}")
-        self._execute_command(command)
         self._display_prompt()
 
-    def _history_up(self, event=None):
-        if self.history and self.history_index > 0:
-            self.history_index -= 1
-            self.input_entry.delete(0, tk.END)
-            self.input_entry.insert(0, self.history[self.history_index])
+    # ---------------- UI ----------------
+    def _setup_ui(self):
+        self.title(f"Shell Emulator - {self.vfs_path if self.vfs_path else 'no VFS'}")
+        self.geometry("900x600")
+
+        self.text = scrolledtext.ScrolledText(
+            self, wrap="word",
+            bg="black", fg="white",
+            insertbackground="white", font=("Consolas", 12)
+        )
+        self.text.pack(expand=True, fill="both")
+
+        self.text.bind("<Return>", self._on_enter)
+        self.text.bind("<BackSpace>", self._on_backspace)
+        self.text.bind("<Key>", self._on_key)
+
+        self.prompt_mark = None
+
+    def _display_welcome(self):
+        self._append_text("Welcome to the Shell Emulator!\n")
+        self._append_text(f"VFS path: {self.vfs_path}\n")
+        self._append_text(f"Startup script: {self.startup_script}\n")
+
+    def _append_text(self, text):
+        self.text.insert(tk.END, text)
+        self.text.see(tk.END)
+
+    def _display_prompt(self):
+        username = getpass.getuser()
+        hostname = platform.node()
+        cwd_path = self._get_cwd_path()
+        prompt = f"{username}@{hostname}:{cwd_path}$ "
+        self._append_text(prompt)
+        self.prompt_mark = self.text.index(tk.INSERT)
+
+    # ---------------- Input handling ----------------
+    def _on_backspace(self, event):
+        if self.text.compare(tk.INSERT, ">", self.prompt_mark):
+            return None
         return "break"
 
-    def _history_down(self, event=None):
-        if self.history and self.history_index < len(self.history) - 1:
-            self.history_index += 1
-            self.input_entry.delete(0, tk.END)
-            self.input_entry.insert(0, self.history[self.history_index])
+    def _on_key(self, event):
+        if self.text.compare(tk.INSERT, "<", self.prompt_mark):
+            self.text.mark_set(tk.INSERT, self.prompt_mark)
+        return None
+
+    def _on_enter(self, event):
+        command = self.text.get(self.prompt_mark, tk.END).strip()
+        self._append_text("\n")
+        if command:
+            self.history.append(command)
+            self.history_index = len(self.history)
+            self._execute_command(command)
+        self._display_prompt()
         return "break"
 
+    # ---------------- Command execution ----------------
     def _execute_command(self, command_line):
-        parts = command_line.split()
+        parts = shlex.split(command_line)
         if not parts:
             return
 
-        parts = [os.path.expandvars(part) for part in parts]
         command, args = parts[0], parts[1:]
 
-        if command == "ls":
-            self._command_ls(args)
-        elif command == "cd":
-            self._command_cd(args)
-        elif command == "pwd":
-            self._command_pwd()
-        elif command == "uniq":
-            self._command_uniq(args)
-        elif command == "head":
-            self._command_head(args)
-        elif command == "vfs-save":
-            self._command_vfs_save(args)
-        elif command == "exit":
-            self.quit()
-        else:
-            self._display_output(f"Command not found: {command}")
+        try:
+            if command == "ls":
+                self._command_ls(args)
+            elif command == "cd":
+                self._command_cd(args)
+            elif command == "pwd":
+                self._command_pwd()
+            elif command == "head":
+                self._command_head(args)
+            elif command == "uniq":
+                self._command_uniq(args)
+            elif command == "cp":
+                self._command_cp(args)
+            elif command == "clear":
+                self.text.delete("1.0", tk.END)
+            elif command == "exit":
+                self.quit()
+            else:
+                self._append_text(f"{command}: command not found\n")
+        except Exception as e:
+            self._append_text(f"Error: {e}\n")
 
-    # ---------------- VFS Commands ----------------
-
+    # ---------------- Commands ----------------
     def _command_ls(self, args):
-        if not self.cwd:
-            self._display_output("No VFS loaded.")
-            return
-        if not self.cwd.is_dir:
-            self._display_output("Not a directory.")
-            return
-        if self.cwd.children:
-            self._display_output(" ".join(sorted(self.cwd.children.keys())))
+        if not self.cwd.children:
+            self._append_text("empty home screen\n")
         else:
-            self._display_output("(empty directory)")
+            self._append_text(" ".join(self.cwd.children.keys()) + "\n")
 
     def _command_cd(self, args):
         if not args:
-            self._display_output("cd: missing argument")
+            self.cwd = self.vfs_root
             return
         target = args[0]
-
         if target == "/":
             self.cwd = self.vfs_root
             return
-
         if target == "..":
-            if self.cwd == self.vfs_root:
-                return
-            path_parts = self._get_cwd_path().strip("/").split("/")
-            path_parts = path_parts[:-1]
-            node = self.vfs_root
-            for p in path_parts:
-                node = node.children[p]
-            self.cwd = node
+            if self.cwd.parent:
+                self.cwd = self.cwd.parent
             return
-
         if target in self.cwd.children and self.cwd.children[target].is_dir:
             self.cwd = self.cwd.children[target]
         else:
-            self._display_output(f"cd: {target}: No such directory")
+            self._append_text(f"cd: {target}: No such directory\n")
 
     def _command_pwd(self):
-        self._display_output(self._get_cwd_path())
-
-    def _command_vfs_save(self, args):
-        if not args:
-            self._display_output("vfs-save: missing path")
-            return
-        save_path = args[0]
-        if os.path.exists(save_path):
-            self._display_output(f"Error: Path already exists on disk: {save_path}")
-            return
-        try:
-            self._save_vfs_to_disk(self.vfs_root, save_path)
-            self._display_output(f"VFS saved to {save_path}")
-        except Exception as e:
-            self._display_output(f"Error saving VFS: {e}")
-
-    def _command_uniq(self, args):
-        if not args:
-            self._display_output("uniq: missing file operand")
-            return
-
-        filename = args[0]
-        node = self._get_file_from_cwd(filename)
-        if not node:
-            self._display_output(f"uniq: {filename}: No such file")
-            return
-
-        if node.is_dir:
-            self._display_output(f"uniq: {filename}: Is a directory")
-            return
-
-        lines = node.content.splitlines()
-        prev = None
-        result = []
-        for line in lines:
-            if line != prev:
-                result.append(line)
-            prev = line
-
-        self._display_output("\n".join(result))
+        self._append_text(self._get_cwd_path() + "\n")
 
     def _command_head(self, args):
         if not args:
-            self._display_output("head: missing file operand")
+            self._append_text("head: missing file operand\n")
             return
-
         filename = args[0]
-        n = 10  # по умолчанию 10 строк
-        if args[0].startswith("-n"):
+        n = 10
+        if len(args) > 1 and args[1].startswith("-n"):
             try:
-                n = int(args[0][2:])
-                filename = args[1]
+                n = int(args[1][2:])
             except:
-                self._display_output("head: invalid number of lines")
-                return
-        else:
-            filename = args[0]
-
-        node = self._get_file_from_cwd(filename)
-        if not node:
-            self._display_output(f"head: {filename}: No such file")
+                pass
+        if filename not in self.cwd.children or self.cwd.children[filename].is_dir:
+            self._append_text(f"head: {filename}: No such file\n")
             return
+        lines = self.cwd.children[filename].content.splitlines()
+        for line in lines[:n]:
+            self._append_text(line + "\n")
 
+    def _command_uniq(self, args):
+        if not args:
+            self._append_text("uniq: missing file operand\n")
+            return
+        filename = args[0]
+        if filename not in self.cwd.children or self.cwd.children[filename].is_dir:
+            self._append_text(f"uniq: {filename}: No such file\n")
+            return
+        lines = self.cwd.children[filename].content.splitlines()
+        prev = None
+        for line in lines:
+            if line != prev:
+                self._append_text(line + "\n")
+            prev = line
+
+    def _command_cp(self, args):
+        if not args:
+            self._append_text("cp: missing file operand\n")
+            return
+        if len(args) < 2:
+            self._append_text("cp: missing destination file operand\n")
+            return
+        src, dst = args[0], args[1]
+        if src not in self.cwd.children:
+            self._append_text(f"cp: cannot stat '{src}': No such file or directory\n")
+            return
+        if dst in self.cwd.children:
+            self._append_text(f"cp: cannot overwrite '{dst}': File exists\n")
+            return
+        node = self.cwd.children[src]
         if node.is_dir:
-            self._display_output(f"head: {filename}: Is a directory")
-            return
-
-        lines = node.content.splitlines()
-        self._display_output("\n".join(lines[:n]))
-
-    def _get_file_from_cwd(self, name):
-        if name in self.cwd.children:
-            return self.cwd.children[name]
-        return None
-    # ---------------- VFS Implementation ----------------
-
-    def _load_vfs(self, root_path):
-        if not os.path.isdir(root_path):
-            self._display_output(f"Error: VFS path not found or not a directory: {root_path}")
-            return
-
-        def build_tree(path):
-            node = VFSNode(os.path.basename(path) or "/", os.path.isdir(path))
-            if node.is_dir:
-                for name in os.listdir(path):
-                    child_path = os.path.join(path, name)
-                    node.children[name] = build_tree(child_path)
-            else:
-                try:
-                    with open(path, "r", encoding="utf-8") as f:
-                        node.content = f.read()
-                except:
-                    node.content = ""
-            return node
-
-        self.vfs_root = build_tree(root_path)
-        self.cwd = self.vfs_root
-        self._display_output(f"VFS loaded from {root_path}")
-
-    def _save_vfs_to_disk(self, node, path):
-        if node.is_dir:
-            os.makedirs(path, exist_ok=True)
-            for child_name, child_node in node.children.items():
-                self._save_vfs_to_disk(child_node, os.path.join(path, child_name))
+            self._append_text(f"cp: -r not specified; omitting directory '{src}'\n")
         else:
-            with open(path, "w", encoding="utf-8") as f:
-                f.write(node.content or "")
+            new_node = VFSNode(dst, False, self.cwd)
+            new_node.content = node.content
+            self.cwd.children[dst] = new_node
 
+    # ---------------- Helpers ----------------
     def _get_cwd_path(self):
-        path = []
+        path_parts = []
         node = self.cwd
-        while node and node != self.vfs_root:
-            path.append(node.name)
-            # find parent
-            node = self._find_parent(self.vfs_root, node)
-        return "/" + "/".join(reversed(path))
-
-    def _find_parent(self, current, target):
-        if not current.is_dir:
-            return None
-        for child in current.children.values():
-            if child == target:
-                return current
-            res = self._find_parent(child, target)
-            if res:
-                return res
-        return None
-
-    # ---------------- Startup script ----------------
+        while node and node.parent is not None:
+            path_parts.append(node.name)
+            node = node.parent
+        return "/" + "/".join(reversed(path_parts)) if path_parts else "/"
 
     def _run_startup_script(self):
         try:
-            with open(self.startup_script, 'r') as f:
+            with open(self.startup_script, "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
-                    if line and not line.startswith('#'):
-                        self._display_output(f"> {line}")
-                        self._execute_command(line)
+                    if not line or line.startswith("#"):
+                        continue
+                    self._append_text(f"> {line}\n")
+                    self._execute_command(line)
         except Exception as e:
-            self._display_output(f"Error executing script: {e}")
-
-        self._display_prompt()
+            self._append_text(f"Error executing startup script: {e}\n")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description='Shell Emulator')
-    parser.add_argument('--vfs-path', help='Path to VFS')
-    parser.add_argument('--startup-script', help='Path to startup script')
-
+    parser = argparse.ArgumentParser(description="Shell Emulator")
+    parser.add_argument("--vfs-path", help="Path to VFS")
+    parser.add_argument("--startup-script", help="Path to startup script")
     args = parser.parse_args()
+
     app = ShellEmulator(args.vfs_path, args.startup_script)
     app.mainloop()
